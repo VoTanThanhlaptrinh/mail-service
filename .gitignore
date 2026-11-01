@@ -1,0 +1,30 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+build/
+client/dist/
+server/dist/
+
+# env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# tooling caches (kept inside the workspace because of the sandbox)
+.npm-cache/
+.pnpm-store/
+.pnpm-cache/
+
+# logs & os files
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# editors
+.vscode/*
+!.vscode/extensions.json
+.idea/
