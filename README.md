@@ -54,6 +54,8 @@ npm run dev
 - Web: <http://localhost:5173>
 - API: <http://localhost:4000/api/health>
 
+![Giao diện Mail Service](docs/preview.png)
+
 > Nếu cổng 5433 đã bị chiếm, đổi `POSTGRES_PORT` trong `docker-compose.yml` **và** `DATABASE_URL` trong `server/.env` cho khớp nhau.
 >
 > Muốn dùng PostgreSQL cài sẵn trên máy thay vì Docker: tạo database `mail_service` rồi sửa `DATABASE_URL` trong `server/.env` (ví dụ `postgresql://postgres:matkhau@localhost:5432/mail_service`).
