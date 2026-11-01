@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import { and, count, desc, eq, ilike, or, type SQL } from 'drizzle-orm';
-import { z } from 'zod';
+import { ZodError, z } from 'zod';
 import { db } from '../db.ts';
 import { mails } from '../schema.ts';
+import { optionalApiKey } from '../middleware/api-key-auth.ts';
 import { HttpError } from '../middleware/error-handler.ts';
+import { recordUsage } from '../services/usage.ts';
 
 export const mailsRouter = Router();
 
@@ -66,21 +68,83 @@ mailsRouter.post('/', async (req, res) => {
   res.status(201).json(mail);
 });
 
-/** POST /api/mails/:id/send — placeholder transport: marks the mail as sent. */
-mailsRouter.post('/:id/send', async (req, res) => {
-  const id = idSchema.parse(req.params.id);
-  const [existing] = await db.select().from(mails).where(eq(mails.id, id));
+function sendErrorCode(status: number): string {
+  if (status === 404) return 'MAIL_NOT_FOUND';
+  if (status === 409) return 'MAIL_ALREADY_SENT';
+  if (status === 400) return 'INVALID_REQUEST';
+  return 'MAIL_SEND_FAILED';
+}
 
-  if (!existing) throw new HttpError(404, 'Mail not found');
-  if (existing.status === 'SENT') throw new HttpError(409, 'Mail has already been sent');
+/**
+ * POST /api/mails/:id/send — placeholder transport: marks the mail as sent.
+ *
+ * An API key is optional; when one is used the call is written to
+ * api_key_usage_logs (SUCCESS here, FAILED in the catch) without ever changing
+ * the response the admin UI already relies on.
+ */
+mailsRouter.post('/:id/send', optionalApiKey, async (req, res) => {
+  const startedAt = Date.now();
+  const rawId = typeof req.params.id === 'string' ? req.params.id : '';
+  const context = req.auditContext;
 
-  const [mail] = await db
-    .update(mails)
-    .set({ status: 'SENT', sentAt: new Date(), error: null, updatedAt: new Date() })
-    .where(eq(mails.id, id))
-    .returning();
+  const logUsage = async (input: {
+    outcome: 'SUCCESS' | 'FAILED';
+    statusCode: number;
+    mailId?: string | null;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+  }) => {
+    if (!req.apiKey) return;
 
-  res.json(mail);
+    await recordUsage({
+      apiKeyId: req.apiKey.id,
+      mailId: input.mailId ?? null,
+      outcome: input.outcome,
+      httpMethod: req.method,
+      path: req.originalUrl,
+      statusCode: input.statusCode,
+      errorCode: input.errorCode ?? null,
+      errorMessage: input.errorMessage ?? null,
+      durationMs: Date.now() - startedAt,
+      requestId: context?.requestId ?? null,
+      ip: context?.ip ?? null,
+      userAgent: context?.userAgent ?? null,
+    });
+  };
+
+  try {
+    const id = idSchema.parse(rawId);
+    const [existing] = await db.select().from(mails).where(eq(mails.id, id));
+
+    if (!existing) throw new HttpError(404, 'Mail not found');
+    if (existing.status === 'SENT') throw new HttpError(409, 'Mail has already been sent');
+
+    const [mail] = await db
+      .update(mails)
+      .set({ status: 'SENT', sentAt: new Date(), error: null, updatedAt: new Date() })
+      .where(eq(mails.id, id))
+      .returning();
+
+    await logUsage({ outcome: 'SUCCESS', statusCode: 200, mailId: mail.id });
+    res.json(mail);
+  } catch (error) {
+    const status =
+      error instanceof HttpError ? error.status : error instanceof ZodError ? 400 : 500;
+
+    // A missing mail cannot be referenced by the usage FK, so the row stays
+    // attributable to the key but not to a mail id that does not exist.
+    const mailId =
+      status === 404 || !z.uuid().safeParse(rawId).success ? null : rawId;
+
+    await logUsage({
+      outcome: 'FAILED',
+      statusCode: status,
+      mailId,
+      errorCode: sendErrorCode(status),
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+    });
+    throw error;
+  }
 });
 
 /** PATCH /api/mails/:id — update status / error message. */
