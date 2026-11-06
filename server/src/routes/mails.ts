@@ -1,11 +1,13 @@
+import type { Request } from 'express';
 import { Router } from 'express';
 import { and, count, desc, eq, ilike, or, type SQL } from 'drizzle-orm';
-import { ZodError, z } from 'zod';
+import { z } from 'zod';
 import { db } from '../db.ts';
 import { mails } from '../schema.ts';
-import { optionalApiKey } from '../middleware/api-key-auth.ts';
+import { optionalApiKey, requireApiKey } from '../middleware/api-key-auth.ts';
 import { HttpError } from '../middleware/error-handler.ts';
 import { recordUsage } from '../services/usage.ts';
+import { deliverMail, MailDeliveryError } from '../services/mailer.ts';
 
 export const mailsRouter = Router();
 
@@ -30,6 +32,42 @@ const listQuerySchema = z.object({
 });
 
 const idSchema = z.uuid('Invalid mail id');
+
+function sendErrorCode(status: number): string {
+  if (status === 404) return 'MAIL_NOT_FOUND';
+  if (status === 409) return 'MAIL_ALREADY_SENT';
+  if (status === 400) return 'INVALID_REQUEST';
+  return 'MAIL_SEND_FAILED';
+}
+
+async function logMailUsage(
+  req: Request,
+  startedAt: number,
+  input: {
+    outcome: 'SUCCESS' | 'FAILED';
+    statusCode: number;
+    mailId?: string | null;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+  },
+): Promise<void> {
+  if (!req.apiKey) return;
+
+  await recordUsage({
+    apiKeyId: req.apiKey.id,
+    mailId: input.mailId ?? null,
+    outcome: input.outcome,
+    httpMethod: req.method,
+    path: req.originalUrl,
+    statusCode: input.statusCode,
+    errorCode: input.errorCode ?? null,
+    errorMessage: input.errorMessage ?? null,
+    durationMs: Date.now() - startedAt,
+    requestId: req.auditContext?.requestId ?? null,
+    ip: req.auditContext?.ip ?? null,
+    userAgent: req.auditContext?.userAgent ?? null,
+  });
+}
 
 /** GET /api/mails — paginated list with optional status filter and free-text search. */
 mailsRouter.get('/', async (req, res) => {
@@ -68,15 +106,65 @@ mailsRouter.post('/', async (req, res) => {
   res.status(201).json(mail);
 });
 
-function sendErrorCode(status: number): string {
-  if (status === 404) return 'MAIL_NOT_FOUND';
-  if (status === 409) return 'MAIL_ALREADY_SENT';
-  if (status === 400) return 'INVALID_REQUEST';
-  return 'MAIL_SEND_FAILED';
-}
+/**
+ * POST /api/mails/send — 1-step direct mail delivery for external services.
+ * Requires an API key with the 'mail:send' scope.
+ */
+mailsRouter.post('/send', requireApiKey('mail:send'), async (req, res) => {
+  const startedAt = Date.now();
+
+  const parsed = createMailSchema.safeParse(req.body);
+  if (!parsed.success) {
+    await logMailUsage(req, startedAt, {
+      outcome: 'FAILED',
+      statusCode: 400,
+      mailId: null,
+      errorCode: 'INVALID_REQUEST',
+      errorMessage: 'Validation failed',
+    });
+    throw parsed.error;
+  }
+
+  const [queued] = await db.insert(mails).values(parsed.data).returning();
+
+  try {
+    await deliverMail(parsed.data);
+
+    const [sentMail] = await db
+      .update(mails)
+      .set({ status: 'SENT', sentAt: new Date(), error: null, updatedAt: new Date() })
+      .where(eq(mails.id, queued.id))
+      .returning();
+
+    await logMailUsage(req, startedAt, {
+      outcome: 'SUCCESS',
+      statusCode: 201,
+      mailId: sentMail.id,
+    });
+
+    res.status(201).json(sentMail);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown SMTP error';
+    await db
+      .update(mails)
+      .set({ status: 'FAILED', error: errorMessage, updatedAt: new Date() })
+      .where(eq(mails.id, queued.id));
+
+    const status = error instanceof HttpError ? error.status : 502;
+    await logMailUsage(req, startedAt, {
+      outcome: 'FAILED',
+      statusCode: status,
+      mailId: queued.id,
+      errorCode: sendErrorCode(status),
+      errorMessage,
+    });
+
+    throw error;
+  }
+});
 
 /**
- * POST /api/mails/:id/send — placeholder transport: marks the mail as sent.
+ * POST /api/mails/:id/send — delivers a queued or failed mail via SMTP.
  *
  * An API key is optional; when one is used the call is written to
  * api_key_usage_logs (SUCCESS here, FAILED in the catch) without ever changing
@@ -85,39 +173,45 @@ function sendErrorCode(status: number): string {
 mailsRouter.post('/:id/send', optionalApiKey, async (req, res) => {
   const startedAt = Date.now();
   const rawId = typeof req.params.id === 'string' ? req.params.id : '';
-  const context = req.auditContext;
 
-  const logUsage = async (input: {
-    outcome: 'SUCCESS' | 'FAILED';
-    statusCode: number;
-    mailId?: string | null;
-    errorCode?: string | null;
-    errorMessage?: string | null;
-  }) => {
-    if (!req.apiKey) return;
-
-    await recordUsage({
-      apiKeyId: req.apiKey.id,
-      mailId: input.mailId ?? null,
-      outcome: input.outcome,
-      httpMethod: req.method,
-      path: req.originalUrl,
-      statusCode: input.statusCode,
-      errorCode: input.errorCode ?? null,
-      errorMessage: input.errorMessage ?? null,
-      durationMs: Date.now() - startedAt,
-      requestId: context?.requestId ?? null,
-      ip: context?.ip ?? null,
-      userAgent: context?.userAgent ?? null,
+  const parsedId = idSchema.safeParse(rawId);
+  if (!parsedId.success) {
+    await logMailUsage(req, startedAt, {
+      outcome: 'FAILED',
+      statusCode: 400,
+      mailId: null,
+      errorCode: 'INVALID_REQUEST',
+      errorMessage: 'Invalid mail id',
     });
-  };
+    throw parsedId.error;
+  }
+  const id = parsedId.data;
+
+  const [existing] = await db.select().from(mails).where(eq(mails.id, id));
+  if (!existing) {
+    await logMailUsage(req, startedAt, {
+      outcome: 'FAILED',
+      statusCode: 404,
+      mailId: null,
+      errorCode: 'MAIL_NOT_FOUND',
+      errorMessage: 'Mail not found',
+    });
+    throw new HttpError(404, 'Mail not found');
+  }
+
+  if (existing.status === 'SENT') {
+    await logMailUsage(req, startedAt, {
+      outcome: 'FAILED',
+      statusCode: 409,
+      mailId: existing.id,
+      errorCode: 'MAIL_ALREADY_SENT',
+      errorMessage: 'Mail has already been sent',
+    });
+    throw new HttpError(409, 'Mail has already been sent');
+  }
 
   try {
-    const id = idSchema.parse(rawId);
-    const [existing] = await db.select().from(mails).where(eq(mails.id, id));
-
-    if (!existing) throw new HttpError(404, 'Mail not found');
-    if (existing.status === 'SENT') throw new HttpError(409, 'Mail has already been sent');
+    await deliverMail({ to: existing.to, subject: existing.subject, body: existing.body });
 
     const [mail] = await db
       .update(mails)
@@ -125,24 +219,24 @@ mailsRouter.post('/:id/send', optionalApiKey, async (req, res) => {
       .where(eq(mails.id, id))
       .returning();
 
-    await logUsage({ outcome: 'SUCCESS', statusCode: 200, mailId: mail.id });
+    await logMailUsage(req, startedAt, { outcome: 'SUCCESS', statusCode: 200, mailId: mail.id });
     res.json(mail);
   } catch (error) {
-    const status =
-      error instanceof HttpError ? error.status : error instanceof ZodError ? 400 : 500;
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    await db
+      .update(mails)
+      .set({ status: 'FAILED', error: errorMessage, updatedAt: new Date() })
+      .where(eq(mails.id, id));
 
-    // A missing mail cannot be referenced by the usage FK, so the row stays
-    // attributable to the key but not to a mail id that does not exist.
-    const mailId =
-      status === 404 || !z.uuid().safeParse(rawId).success ? null : rawId;
-
-    await logUsage({
+    const status = error instanceof HttpError ? error.status : 502;
+    await logMailUsage(req, startedAt, {
       outcome: 'FAILED',
       statusCode: status,
-      mailId,
+      mailId: existing.id,
       errorCode: sendErrorCode(status),
-      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+      errorMessage,
     });
+
     throw error;
   }
 });

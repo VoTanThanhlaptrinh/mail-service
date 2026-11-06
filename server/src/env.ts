@@ -8,6 +8,17 @@ const schema = z.object({
     .string()
     .min(1, 'DATABASE_URL is required — copy server/.env.example to server/.env'),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
+  SMTP_HOST: z.string().trim().min(1).default('localhost'),
+  SMTP_PORT: z.coerce.number().int().positive().default(1025),
+  SMTP_SECURE: z
+    .preprocess(
+      (val) => (typeof val === 'string' ? val.trim().toLowerCase() : val),
+      z.enum(['true', 'false']).default('false'),
+    )
+    .transform((val) => val === 'true'),
+  SMTP_USER: z.string().trim().default(''),
+  SMTP_PASS: z.string().default(''),
+  SMTP_FROM: z.string().trim().min(1).default('Mail Service <no-reply@example.com>'),
 });
 
 const parsed = schema.safeParse(process.env);

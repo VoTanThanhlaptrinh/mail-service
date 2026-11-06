@@ -57,9 +57,33 @@ export function MailboxPage({ notify }: MailboxPageProps) {
     try {
       await api.createMail(input);
       await loadMails();
+      notify('success', 'Đã thêm mail vào hàng đợi');
     } catch (cause) {
       notify('error', cause instanceof Error ? cause.message : 'Không tạo được mail');
       throw cause;
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleSendNow(input: CreateMailInput): Promise<void> {
+    setCreating(true);
+    let created: Mail;
+    try {
+      created = await api.createMail(input);
+    } catch (cause) {
+      setCreating(false);
+      notify('error', cause instanceof Error ? cause.message : 'Không tạo được mail');
+      throw cause;
+    }
+
+    try {
+      await api.sendMail(created.id);
+      await loadMails();
+      notify('success', `Đã gửi email tới ${created.to}`);
+    } catch (cause) {
+      await loadMails();
+      notify('error', cause instanceof Error ? cause.message : 'Không gửi được mail');
     } finally {
       setCreating(false);
     }
@@ -70,7 +94,9 @@ export function MailboxPage({ notify }: MailboxPageProps) {
     try {
       await api.sendMail(id);
       await loadMails();
+      notify('success', 'Đã gửi email thành công');
     } catch (cause) {
+      await loadMails();
       notify('error', cause instanceof Error ? cause.message : 'Không gửi được mail');
     } finally {
       setBusyId(null);
@@ -91,7 +117,7 @@ export function MailboxPage({ notify }: MailboxPageProps) {
 
   return (
     <main className="layout">
-      <MailForm onCreate={handleCreate} busy={creating} />
+      <MailForm onCreate={handleCreate} onSendNow={handleSendNow} busy={creating} />
 
       <section className="card list">
         <div className="list__toolbar">

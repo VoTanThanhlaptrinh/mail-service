@@ -1,21 +1,27 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { CreateMailInput } from '../types';
 
 interface MailFormProps {
   onCreate: (input: CreateMailInput) => Promise<void>;
+  onSendNow: (input: CreateMailInput) => Promise<void>;
   busy: boolean;
 }
 
-export function MailForm({ onCreate, busy }: MailFormProps) {
+export function MailForm({ onCreate, onSendNow, busy }: MailFormProps) {
+  const formRef = useRef<HTMLFormElement>(null);
   const [to, setTo] = useState('');
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function submitWith(action: (input: CreateMailInput) => Promise<void>) {
+    const payload = { to: to.trim(), subject: subject.trim(), body: body.trim() };
+    if (!payload.to || !payload.subject || !payload.body) {
+      return;
+    }
+
     try {
-      await onCreate({ to: to.trim(), subject: subject.trim(), body: body.trim() });
+      await action(payload);
       setTo('');
       setSubject('');
       setBody('');
@@ -24,8 +30,13 @@ export function MailForm({ onCreate, busy }: MailFormProps) {
     }
   }
 
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await submitWith(onSendNow);
+  }
+
   return (
-    <form className="card form" onSubmit={handleSubmit}>
+    <form ref={formRef} className="card form" onSubmit={handleSubmit}>
       <h2 className="card__title">Soạn mail mới</h2>
 
       <label className="field">
@@ -65,9 +76,22 @@ export function MailForm({ onCreate, busy }: MailFormProps) {
         />
       </label>
 
-      <button className="button button--primary" type="submit" disabled={busy}>
-        {busy ? 'Đang lưu…' : 'Thêm vào hàng đợi'}
-      </button>
+      <div className="form__actions">
+        <button className="button button--primary" type="submit" disabled={busy}>
+          {busy ? 'Đang xử lý…' : 'Gửi ngay'}
+        </button>
+        <button
+          className="button button--ghost"
+          type="button"
+          disabled={busy}
+          onClick={() => {
+            if (!formRef.current?.reportValidity()) return;
+            void submitWith(onCreate);
+          }}
+        >
+          {busy ? 'Đang lưu…' : 'Thêm vào hàng đợi'}
+        </button>
+      </div>
     </form>
   );
 }

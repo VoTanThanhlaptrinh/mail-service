@@ -1,5 +1,5 @@
 import { and, eq, isNull } from 'drizzle-orm';
-import type { RequestHandler } from 'express';
+import type { Request, RequestHandler } from 'express';
 import { db } from '../db.ts';
 import { hashApiKey, isApiKeyFormat } from '../lib/api-keys.ts';
 import { recordUsage } from '../services/usage.ts';
@@ -23,6 +23,81 @@ function rejectionReason(apiKey: ApiKey): KeyRejection | null {
   return null;
 }
 
+async function authenticateBearerToken(req: Request, requiredScope: string): Promise<void> {
+  const header = req.header('authorization');
+  if (!header) {
+    throw new HttpError(401, 'API key is required');
+  }
+
+  const match = BEARER_PATTERN.exec(header.trim());
+  if (!match) {
+    throw new HttpError(401, 'Authorization header must be "Bearer <api-key>"');
+  }
+
+  const token = match[1];
+  if (!isApiKeyFormat(token)) {
+    throw new HttpError(401, 'Invalid API key');
+  }
+
+  const [apiKey] = await db
+    .select()
+    .from(apiKeys)
+    .where(and(eq(apiKeys.keyHash, hashApiKey(token)), isNull(apiKeys.deletedAt)));
+
+  if (!apiKey) {
+    throw new HttpError(401, 'Invalid API key');
+  }
+
+  const rejection = rejectionReason(apiKey);
+  if (rejection !== null) {
+    await recordUsage({
+      apiKeyId: apiKey.id,
+      outcome: 'REJECTED',
+      httpMethod: req.method,
+      path: req.originalUrl,
+      statusCode: 401,
+      errorCode: rejection.code,
+      errorMessage: rejection.message,
+      requestId: req.auditContext?.requestId ?? null,
+      ip: req.auditContext?.ip ?? null,
+      userAgent: req.auditContext?.userAgent ?? null,
+    });
+    throw new HttpError(401, rejection.message);
+  }
+
+  if (!apiKey.scopes.includes(requiredScope)) {
+    await recordUsage({
+      apiKeyId: apiKey.id,
+      outcome: 'REJECTED',
+      httpMethod: req.method,
+      path: req.originalUrl,
+      statusCode: 403,
+      errorCode: 'INSUFFICIENT_SCOPE',
+      errorMessage: `API key does not have required scope: ${requiredScope}`,
+      requestId: req.auditContext?.requestId ?? null,
+      ip: req.auditContext?.ip ?? null,
+      userAgent: req.auditContext?.userAgent ?? null,
+    });
+    throw new HttpError(403, `API key does not have required scope: ${requiredScope}`);
+  }
+
+  req.apiKey = apiKey;
+}
+
+/**
+ * Requires a valid Bearer API key with the specified scope.
+ */
+export function requireApiKey(requiredScope = 'mail:send'): RequestHandler {
+  return async (req, _res, next) => {
+    try {
+      await authenticateBearerToken(req, requiredScope);
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
 /**
  * Authenticates a Bearer API key when the Authorization header is present.
  *
@@ -39,43 +114,7 @@ export const optionalApiKey: RequestHandler = async (req, _res, next) => {
   }
 
   try {
-    const match = BEARER_PATTERN.exec(header.trim());
-    if (!match) {
-      throw new HttpError(401, 'Authorization header must be "Bearer <api-key>"');
-    }
-
-    const token = match[1];
-    if (!isApiKeyFormat(token)) {
-      throw new HttpError(401, 'Invalid API key');
-    }
-
-    const [apiKey] = await db
-      .select()
-      .from(apiKeys)
-      .where(and(eq(apiKeys.keyHash, hashApiKey(token)), isNull(apiKeys.deletedAt)));
-
-    if (!apiKey) {
-      throw new HttpError(401, 'Invalid API key');
-    }
-
-    const rejection = rejectionReason(apiKey);
-    if (rejection) {
-      await recordUsage({
-        apiKeyId: apiKey.id,
-        outcome: 'REJECTED',
-        httpMethod: req.method,
-        path: req.originalUrl,
-        statusCode: 401,
-        errorCode: rejection.code,
-        errorMessage: rejection.message,
-        requestId: req.auditContext?.requestId ?? null,
-        ip: req.auditContext?.ip ?? null,
-        userAgent: req.auditContext?.userAgent ?? null,
-      });
-      throw new HttpError(401, rejection.message);
-    }
-
-    req.apiKey = apiKey;
+    await authenticateBearerToken(req, 'mail:send');
     next();
   } catch (error) {
     next(error);

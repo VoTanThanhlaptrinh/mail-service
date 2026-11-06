@@ -247,6 +247,16 @@ code {
   width: 100%;
 }
 
+.form__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.form__actions .button {
+  width: 100%;
+}
+
 .button--solid-danger {
   background: var(--red);
   color: #fff;

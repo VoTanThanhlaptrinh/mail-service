@@ -34,7 +34,7 @@ export function MailItem({ mail, busy, onSend, onDelete }: MailItemProps) {
         <div className="mail__actions">
           {mail.status !== 'SENT' ? (
             <button className="button button--ghost" type="button" disabled={busy} onClick={() => onSend(mail.id)}>
-              Gửi
+              {mail.status === 'FAILED' ? 'Gửi lại' : 'Gửi'}
             </button>
           ) : null}
           <button className="button button--danger" type="button" disabled={busy} onClick={() => onDelete(mail.id)}>

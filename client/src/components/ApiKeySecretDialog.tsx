@@ -76,8 +76,10 @@ export function ApiKeySecretDialog({ mode, apiKey, onClose }: ApiKeySecretDialog
 
       <div>
         <p className="field__label">Gửi mail bằng key này</p>
-        <pre className="code-block">{`curl -X POST http://localhost:4000/api/mails/<mail-id>/send \\
-  -H "Authorization: Bearer ${apiKey.key}"`}</pre>
+        <pre className="code-block">{`curl -X POST http://localhost:4000/api/mails/send \\
+  -H "Authorization: Bearer ${apiKey.key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"to":"nguoi.nhan@example.com","subject":"Xin chào","body":"Nội dung email"}'`}</pre>
       </div>
 
       {apiKey.keyNotice ? <p className="hint">{apiKey.keyNotice}</p> : null}
