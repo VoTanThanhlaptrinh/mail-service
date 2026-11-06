@@ -25,6 +25,26 @@ export interface CreateMailInput {
   body: string;
 }
 
+export interface BulkRecipientInput {
+  to: string;
+  variables?: Record<string, string>;
+}
+
+export interface BulkCreateMailInput {
+  subject: string;
+  body: string;
+  recipients: BulkRecipientInput[];
+  sendNow?: boolean;
+}
+
+export interface BulkMailResponse {
+  total: number;
+  queuedCount: number;
+  sentCount: number;
+  failedCount: number;
+  items: Mail[];
+}
+
 export interface Health {
   status: 'ok' | 'degraded';
   database: 'up' | 'down';

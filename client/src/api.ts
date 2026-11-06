@@ -4,6 +4,8 @@ import type {
   ApiKeyStatus,
   AuditAction,
   AuditLogListResponse,
+  BulkCreateMailInput,
+  BulkMailResponse,
   CreateMailInput,
   CreatedApiKey,
   Health,
@@ -64,6 +66,10 @@ export const api = {
 
   createMail(input: CreateMailInput) {
     return request<Mail>('/mails', { method: 'POST', body: JSON.stringify(input) });
+  },
+
+  createBulkMail(input: BulkCreateMailInput) {
+    return request<BulkMailResponse>('/mails/bulk', { method: 'POST', body: JSON.stringify(input) });
   },
 
   sendMail(id: string) {

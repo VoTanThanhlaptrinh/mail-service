@@ -17,7 +17,7 @@ server/dist/
 .npm-cache/
 .pnpm-store/
 .pnpm-cache/
-
+scripts/
 # logs & os files
 *.log
 npm-debug.log*

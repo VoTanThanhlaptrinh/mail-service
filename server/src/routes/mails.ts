@@ -3,11 +3,12 @@ import { Router } from 'express';
 import { and, count, desc, eq, ilike, or, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db.ts';
-import { mails } from '../schema.ts';
+import { mails, type Mail } from '../schema.ts';
 import { optionalApiKey, requireApiKey } from '../middleware/api-key-auth.ts';
 import { HttpError } from '../middleware/error-handler.ts';
 import { recordUsage } from '../services/usage.ts';
 import { deliverMail, MailDeliveryError } from '../services/mailer.ts';
+import { renderRecipientMails, type RenderedMailItem } from '../services/template.ts';
 
 export const mailsRouter = Router();
 
@@ -17,6 +18,24 @@ const createMailSchema = z.object({
   to: z.email('Must be a valid email address'),
   subject: z.string().trim().min(1, 'Subject is required').max(200),
   body: z.string().trim().min(1, 'Body is required').max(20_000),
+});
+
+const bulkRecipientSchema = z.object({
+  to: z.email('Must be a valid email address'),
+  variables: z.record(z.string(), z.string()).optional(),
+});
+
+const bulkSendMailSchema = z.object({
+  subject: z.string().trim().min(1, 'Subject is required').max(200),
+  body: z.string().trim().min(1, 'Body is required').max(20_000),
+  recipients: z
+    .array(bulkRecipientSchema)
+    .min(1, 'At least one recipient is required')
+    .max(100, 'Maximum 100 recipients per batch'),
+});
+
+const bulkCreateMailSchema = bulkSendMailSchema.extend({
+  sendNow: z.boolean().optional().default(true),
 });
 
 const updateMailSchema = z.object({
@@ -161,6 +180,198 @@ mailsRouter.post('/send', requireApiKey('mail:send'), async (req, res) => {
 
     throw error;
   }
+});
+
+interface BulkMailExecutionResult {
+  total: number;
+  queuedCount: number;
+  sentCount: number;
+  failedCount: number;
+  items: Mail[];
+}
+
+async function executeBulkSend(renderedItems: RenderedMailItem[]): Promise<BulkMailExecutionResult> {
+  const inserted = await db
+    .insert(mails)
+    .values(
+      renderedItems.map((item) => ({
+        to: item.to,
+        subject: item.subject,
+        body: item.body,
+        status: 'QUEUED' as const,
+      })),
+    )
+    .returning();
+
+  const items: Mail[] = [];
+  let sentCount = 0;
+  let failedCount = 0;
+
+  for (const mail of inserted) {
+    try {
+      await deliverMail({ to: mail.to, subject: mail.subject, body: mail.body });
+
+      const [sentMail] = await db
+        .update(mails)
+        .set({ status: 'SENT', sentAt: new Date(), error: null, updatedAt: new Date() })
+        .where(eq(mails.id, mail.id))
+        .returning();
+
+      items.push(sentMail ?? { ...mail, status: 'SENT', sentAt: new Date(), error: null });
+      sentCount++;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown SMTP error';
+      const [failedMail] = await db
+        .update(mails)
+        .set({ status: 'FAILED', error: errorMessage, updatedAt: new Date() })
+        .where(eq(mails.id, mail.id))
+        .returning();
+
+      items.push(failedMail ?? { ...mail, status: 'FAILED', error: errorMessage });
+      failedCount++;
+    }
+  }
+
+  return {
+    total: items.length,
+    queuedCount: 0,
+    sentCount,
+    failedCount,
+    items,
+  };
+}
+
+async function logBulkSendResult(
+  req: Request,
+  startedAt: number,
+  result: BulkMailExecutionResult,
+): Promise<void> {
+  if (result.failedCount === result.total) {
+    await logMailUsage(req, startedAt, {
+      outcome: 'FAILED',
+      statusCode: 502,
+      mailId: result.items[0]?.id ?? null,
+      errorCode: 'MAIL_SEND_FAILED',
+      errorMessage: 'All emails in batch failed to deliver',
+    });
+    return;
+  }
+
+  await logMailUsage(req, startedAt, {
+    outcome: 'SUCCESS',
+    statusCode: 201,
+    mailId: result.items[0]?.id ?? null,
+  });
+}
+
+/**
+ * POST /api/mails/send-bulk — bulk direct mail delivery for external services.
+ * Requires an API key with the 'mail:send' scope.
+ */
+mailsRouter.post('/send-bulk', requireApiKey('mail:send'), async (req, res) => {
+  const startedAt = Date.now();
+
+  const parsed = bulkSendMailSchema.safeParse(req.body);
+  if (!parsed.success) {
+    await logMailUsage(req, startedAt, {
+      outcome: 'FAILED',
+      statusCode: 400,
+      mailId: null,
+      errorCode: 'INVALID_REQUEST',
+      errorMessage: 'Validation failed',
+    });
+    throw parsed.error;
+  }
+
+  let renderedItems: RenderedMailItem[];
+  try {
+    renderedItems = renderRecipientMails(parsed.data);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Template validation failed';
+    const status = error instanceof HttpError ? error.status : 400;
+    await logMailUsage(req, startedAt, {
+      outcome: 'FAILED',
+      statusCode: status,
+      mailId: null,
+      errorCode: 'INVALID_REQUEST',
+      errorMessage,
+    });
+    throw error;
+  }
+
+  const result = await executeBulkSend(renderedItems);
+  await logBulkSendResult(req, startedAt, result);
+
+  res.status(201).json(result);
+});
+
+/**
+ * POST /api/mails/bulk — bulk mail creation for Admin UI (optional API key, supports sendNow).
+ */
+mailsRouter.post('/bulk', optionalApiKey, async (req, res) => {
+  const startedAt = Date.now();
+
+  const parsed = bulkCreateMailSchema.safeParse(req.body);
+  if (!parsed.success) {
+    await logMailUsage(req, startedAt, {
+      outcome: 'FAILED',
+      statusCode: 400,
+      mailId: null,
+      errorCode: 'INVALID_REQUEST',
+      errorMessage: 'Validation failed',
+    });
+    throw parsed.error;
+  }
+
+  let renderedItems: RenderedMailItem[];
+  try {
+    renderedItems = renderRecipientMails(parsed.data);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Template validation failed';
+    const status = error instanceof HttpError ? error.status : 400;
+    await logMailUsage(req, startedAt, {
+      outcome: 'FAILED',
+      statusCode: status,
+      mailId: null,
+      errorCode: 'INVALID_REQUEST',
+      errorMessage,
+    });
+    throw error;
+  }
+
+  if (!parsed.data.sendNow) {
+    const inserted = await db
+      .insert(mails)
+      .values(
+        renderedItems.map((item) => ({
+          to: item.to,
+          subject: item.subject,
+          body: item.body,
+          status: 'QUEUED' as const,
+        })),
+      )
+      .returning();
+
+    await logMailUsage(req, startedAt, {
+      outcome: 'SUCCESS',
+      statusCode: 201,
+      mailId: inserted[0]?.id ?? null,
+    });
+
+    res.status(201).json({
+      total: inserted.length,
+      queuedCount: inserted.length,
+      sentCount: 0,
+      failedCount: 0,
+      items: inserted,
+    });
+    return;
+  }
+
+  const result = await executeBulkSend(renderedItems);
+  await logBulkSendResult(req, startedAt, result);
+
+  res.status(201).json(result);
 });
 
 /**

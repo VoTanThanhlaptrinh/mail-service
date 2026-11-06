@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
-import type { CreateMailInput, Mail, MailStatus } from '../types';
+import type { BulkCreateMailInput, CreateMailInput, Mail, MailStatus } from '../types';
 import { MailForm } from './MailForm';
 import { MailItem } from './MailItem';
 
@@ -89,6 +89,36 @@ export function MailboxPage({ notify }: MailboxPageProps) {
     }
   }
 
+  async function handleBulkSubmit(input: BulkCreateMailInput): Promise<void> {
+    setCreating(true);
+    try {
+      const res = await api.createBulkMail(input);
+      await loadMails();
+
+      if (!input.sendNow) {
+        notify('success', `Đã thêm ${res.queuedCount} email vào hàng đợi`);
+        return;
+      }
+
+      if (res.failedCount === 0) {
+        notify('success', `Đã gửi thành công ${res.sentCount} email`);
+        return;
+      }
+
+      if (res.sentCount === 0) {
+        notify('error', `Gửi thất bại toàn bộ ${res.failedCount} email`);
+        return;
+      }
+
+      notify('success', `Đã gửi ${res.sentCount}/${res.total} email (${res.failedCount} thất bại)`);
+    } catch (cause) {
+      notify('error', cause instanceof Error ? cause.message : 'Không gửi được email hàng loạt');
+      throw cause;
+    } finally {
+      setCreating(false);
+    }
+  }
+
   async function handleSend(id: string): Promise<void> {
     setBusyId(id);
     try {
@@ -117,7 +147,12 @@ export function MailboxPage({ notify }: MailboxPageProps) {
 
   return (
     <main className="layout">
-      <MailForm onCreate={handleCreate} onSendNow={handleSendNow} busy={creating} />
+      <MailForm
+        onCreate={handleCreate}
+        onSendNow={handleSendNow}
+        onBulkSubmit={handleBulkSubmit}
+        busy={creating}
+      />
 
       <section className="card list">
         <div className="list__toolbar">
