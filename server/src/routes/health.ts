@@ -1,12 +1,12 @@
 import { Router } from 'express';
-import { pool } from '../db.ts';
+import { sqlite } from '../db.ts';
 
 export const healthRouter = Router();
 
-healthRouter.get('/', async (_req, res) => {
+healthRouter.get('/', (_req, res) => {
   let database: 'up' | 'down' = 'up';
   try {
-    await pool.query('SELECT 1');
+    sqlite.prepare('SELECT 1').get();
   } catch {
     database = 'down';
   }

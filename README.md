@@ -1,6 +1,6 @@
 # Mail Service
 
-Monorepo khởi tạo cho dịch vụ gửi mail: **React (Vite + TypeScript)** ở frontend, **Node.js (Express 5 + TypeScript)** ở backend và **PostgreSQL** làm cơ sở dữ liệu.
+Monorepo khởi tạo cho dịch vụ gửi mail: **React (Vite + TypeScript)** ở frontend, **Node.js (Express 5 + TypeScript)** ở backend và **SQLite** làm cơ sở dữ liệu.
 
 ```
 mail-service/
@@ -12,29 +12,31 @@ mail-service/
 │  │  ├─ format.ts          # định dạng ngày giờ, thời lượng, datetime-local
 │  │  └─ types.ts
 │  └─ vite.config.ts        # proxy /api -> http://localhost:4000
-├─ server/                  # Express 5 + Drizzle ORM + pg
+├─ server/                  # Express 5 + Drizzle ORM + better-sqlite3
 │  ├─ src/
 │  │  ├─ routes/            # health.ts, mails.ts, api-keys.ts, usage.ts, audit-logs.ts
 │  │  ├─ middleware/        # error-handler.ts, api-key-auth.ts, request-context.ts
 │  │  ├─ lib/               # api-keys.ts (sinh/hash key), audit.ts (withAudit)
-│  │  ├─ services/          # usage.ts (ghi nhật ký gọi mail)
+│  │  ├─ services/          # mailer.ts, usage.ts, template.ts
 │  │  ├─ types/             # express.d.ts (auditContext, apiKey)
-│  │  ├─ schema.ts          # định nghĩa bảng bằng Drizzle
-│  │  ├─ db.ts              # pool + drizzle client
-│  │  ├─ migrate.ts         # runner cho file .sql
+│  │  ├─ schema.ts          # định nghĩa bảng bằng Drizzle SQLite
+│  │  ├─ db.ts              # better-sqlite3 + drizzle client
+│  │  ├─ migrate.ts         # runner khởi tạo schema SQLite
 │  │  └─ seed.ts            # dữ liệu mẫu
-│  ├─ migrations/           # 0001_init.sql, 0002_api_keys_usage_audit.sql
 │  └─ .env.example
-├─ docker-compose.yml       # PostgreSQL 16 (host port 5433)
+├─ Dockerfile               # Multi-stage build (Node 22 + React build + SQLite)
+├─ docker-compose.yml       # Chạy toàn bộ Mail Service trong Docker (port 4000)
 └─ package.json             # npm workspaces + script tổng
 ```
 
 ## Yêu cầu
 
 - **Node.js >= 22** (server chạy TypeScript trực tiếp bằng type-stripping của Node, không cần `ts-node`/`tsx`)
-- **Docker Desktop** (hoặc một PostgreSQL >= 13 đang chạy sẵn)
+- **Docker Desktop** (tùy chọn: dùng khi muốn chạy toàn bộ ứng dụng bằng Docker)
 
 ## Chạy dự án
+
+### Cách 1: Chạy trực tiếp trên máy (Development)
 
 ```bash
 # 1. Cài dependencies cho cả hai workspace
@@ -44,15 +46,19 @@ npm install
 copy server\.env.example server\.env      # Windows
 # cp server/.env.example server/.env      # macOS / Linux
 
-# 3. Khởi động PostgreSQL (map ra cổng 5433 để không đụng PostgreSQL local ở 5432)
-npm run db:up
-
-# 4. Tạo bảng + dữ liệu mẫu
+# 3. Tạo bảng SQLite + nạp dữ liệu mẫu
 npm run db:migrate
 npm run db:seed
 
-# 5. Chạy song song API (4000) và web (5173)
+# 4. Chạy song song API (4000) và web (5173)
 npm run dev
+```
+
+### Cách 2: Chạy toàn bộ bằng Docker Compose
+
+```bash
+docker compose up -d --build
+# Mở ứng dụng tại http://localhost:4000 (đã gồm cả giao diện web và API)
 ```
 
 - Web: <http://localhost:5173>
@@ -78,10 +84,6 @@ npm run dev
 > UI gọi các route quản trị key vốn **chưa xác thực** (xem lưu ý bên dưới) — chỉ dùng trong mạng nội bộ.
 > Secret chỉ tồn tại trong bộ nhớ của dialog: không ghi `localStorage`, không gọi lại API để đọc secret.
 
-> Nếu cổng 5433 đã bị chiếm, đổi `POSTGRES_PORT` trong `docker-compose.yml` **và** `DATABASE_URL` trong `server/.env` cho khớp nhau.
->
-> Muốn dùng PostgreSQL cài sẵn trên máy thay vì Docker: tạo database `mail_service` rồi sửa `DATABASE_URL` trong `server/.env` (ví dụ `postgresql://postgres:matkhau@localhost:5432/mail_service`).
-
 ## Script
 
 | Lệnh | Mô tả |
@@ -91,8 +93,8 @@ npm run dev
 | `npm run build` | Build server (`tsc`) rồi build client (`vite build`) |
 | `npm start` | Chạy API đã build ở `server/dist` (tự phục vụ luôn `client/dist`) |
 | `npm run typecheck` | Kiểm tra kiểu cho cả hai phần |
-| `npm run db:up` / `db:down` | Bật/tắt container PostgreSQL |
-| `npm run db:migrate` | Áp các file `.sql` trong `server/migrations` |
+| `npm run docker:up` / `docker:down` | Khởi động / dừng toàn bộ Mail Service bằng Docker |
+| `npm run db:migrate` | Khởi tạo bảng và index trong file SQLite |
 | `npm run db:seed` | Xoá dữ liệu và nạp 3 mail mẫu |
 
 ## API

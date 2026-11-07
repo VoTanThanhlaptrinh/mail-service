@@ -1,6 +1,6 @@
 import type { Request } from 'express';
 import { Router } from 'express';
-import { and, count, desc, eq, ilike, or, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, like, or, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db.ts';
 import { mails, type Mail } from '../schema.ts';
@@ -96,7 +96,7 @@ mailsRouter.get('/', async (req, res) => {
   if (status) conditions.push(eq(mails.status, status));
   if (search) {
     const pattern = `%${search}%`;
-    conditions.push(or(ilike(mails.to, pattern), ilike(mails.subject, pattern)) as SQL);
+    conditions.push(or(like(mails.to, pattern), like(mails.subject, pattern)) as SQL);
   }
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;

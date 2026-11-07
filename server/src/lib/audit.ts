@@ -1,5 +1,5 @@
 import type { ExtractTablesWithRelations } from 'drizzle-orm';
-import type { BetterSQLite3Transaction } from 'drizzle-orm/better-sqlite3';
+import type { BetterSQLiteTransaction } from 'drizzle-orm/better-sqlite3';
 import { db } from '../db.ts';
 import * as schema from '../schema.ts';
 import { auditLogs, type AuditChanges } from '../schema.ts';
@@ -12,9 +12,7 @@ export interface AuditContext {
   userAgent: string | null;
 }
 
-export type DbTransaction = BetterSQLite3Transaction<
-  'sync',
-  void,
+export type DbTransaction = BetterSQLiteTransaction<
   typeof schema,
   ExtractTablesWithRelations<typeof schema>
 >;

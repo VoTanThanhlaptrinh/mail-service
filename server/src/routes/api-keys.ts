@@ -101,6 +101,13 @@ apiKeysRouter.post('/', async (req, res) => {
       })
       .returning();
 
+    await recordAudit(tx, context, {
+      entity: 'api_key',
+      entityId: row.id,
+      action: 'CREATE',
+      changes: { after: { name: row.name, scopes: row.scopes, status: row.status } },
+    });
+
     return row;
   });
 
@@ -119,7 +126,7 @@ apiKeysRouter.get('/', async (req, res) => {
   if (status) conditions.push(eq(apiKeys.status, status));
   if (search) {
     const pattern = '%' + search + '%';
-    conditions.push(or(ilike(apiKeys.name, pattern), ilike(apiKeys.keyPrefix, pattern)) as SQL);
+    conditions.push(or(like(apiKeys.name, pattern), like(apiKeys.keyPrefix, pattern)) as SQL);
   }
 
   const where = and(...conditions);
@@ -159,7 +166,7 @@ apiKeysRouter.get('/:id/usage', async (req, res) => {
 apiKeysRouter.patch('/:id', async (req, res) => {
   const id = idSchema.parse(req.params.id);
   const data = updateApiKeySchema.parse(req.body);
-  await findApiKeyOrThrow(id);
+  const existing = await findApiKeyOrThrow(id);
 
   const updated = await withAudit(req.auditContext, async (tx) => {
     const [row] = await tx
@@ -172,6 +179,16 @@ apiKeysRouter.patch('/:id', async (req, res) => {
       })
       .where(eq(apiKeys.id, id))
       .returning();
+
+    await recordAudit(tx, req.auditContext, {
+      entity: 'api_key',
+      entityId: id,
+      action: 'UPDATE',
+      changes: {
+        before: { name: existing.name, description: existing.description, scopes: existing.scopes, expiresAt: existing.expiresAt },
+        after: { name: row.name, description: row.description, scopes: row.scopes, expiresAt: row.expiresAt },
+      },
+    });
 
     return row;
   });
@@ -199,6 +216,16 @@ apiKeysRouter.post('/:id/revoke', async (req, res) => {
       })
       .where(eq(apiKeys.id, id))
       .returning();
+
+    await recordAudit(tx, req.auditContext, {
+      entity: 'api_key',
+      entityId: id,
+      action: 'REVOKE',
+      changes: {
+        before: { status: existing.status },
+        after: { status: 'REVOKED', revokedReason: data.reason ?? 'Revoked via API' },
+      },
+    });
 
     return row;
   });
@@ -228,6 +255,13 @@ apiKeysRouter.post('/:id/rotate', async (req, res) => {
       .where(eq(apiKeys.id, id))
       .returning();
 
+    await recordAudit(tx, req.auditContext, {
+      entity: 'api_key',
+      entityId: id,
+      action: 'ROTATE',
+      changes: { key_rotated: true },
+    });
+
     return row;
   });
 
@@ -254,6 +288,16 @@ apiKeysRouter.delete('/:id', async (req, res) => {
         deletedAt: now,
       })
       .where(eq(apiKeys.id, id));
+
+    await recordAudit(tx, req.auditContext, {
+      entity: 'api_key',
+      entityId: id,
+      action: 'DELETE',
+      changes: {
+        before: { status: existing.status, deletedAt: null },
+        after: { status: 'REVOKED', deletedAt: now },
+      },
+    });
   });
 
   res.status(204).end();

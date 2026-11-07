@@ -1,18 +1,17 @@
 services:
-  mailpit:
-    image: axllent/mailpit:latest
-    container_name: mail-service-smtp
+  mail-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mail-service
     restart: unless-stopped
     ports:
-      # SMTP port (matches SMTP_PORT=1025 in server/.env)
-      - "${SMTP_PORT:-1025}:1025"
-      # Web UI port to view and inspect all sent emails
-      - "${MAILPIT_PORT:-8025}:8025"
+      - "${PORT:-4000}:4000"
+    env_file:
+      - ./server/.env
     environment:
-      MP_MAX_MESSAGES: 5000
-      MP_DATABASE: /data/mailpit.db
+      - NODE_ENV=production
+      - PORT=4000
+      - DATABASE_URL=/app/data/mail.db
     volumes:
-      - mailpit-data:/data
-
-volumes:
-  mailpit-data:
+      - ./data:/app/data
