@@ -1,26 +1,51 @@
-import Database from 'better-sqlite3';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { createClient } from '@libsql/client';
+import { drizzle } from 'drizzle-orm/libsql';
 import fs from 'node:fs';
 import path from 'node:path';
 import { env } from './env.ts';
 import * as schema from './schema.ts';
 
-const dbPath = env.DATABASE_URL.startsWith('file:')
-  ? env.DATABASE_URL.slice(5)
-  : env.DATABASE_URL;
+/**
+ * DATABASE_URL accepts either:
+ *  - a remote libSQL / Turso URL ("libsql://<db>.turso.io", "https://...") — needs TURSO_AUTH_TOKEN
+ *  - a local SQLite file ("file:./data/mail.db" or a plain path such as "./data/mail.db")
+ */
+const REMOTE_PROTOCOLS = /^(libsql|https?|wss?):\/\//i;
 
-const resolvedPath = path.resolve(process.cwd(), dbPath);
-const dir = path.dirname(resolvedPath);
-if (!fs.existsSync(dir)) {
-  fs.mkdirSync(dir, { recursive: true });
+function resolveDatabase(): { url: string; authToken?: string; isLocalFile: boolean } {
+  const raw = env.DATABASE_URL;
+
+  if (REMOTE_PROTOCOLS.test(raw)) {
+    return { url: raw, authToken: env.TURSO_AUTH_TOKEN || undefined, isLocalFile: false };
+  }
+
+  if (env.IS_SERVERLESS) {
+    console.error(
+      'DATABASE_URL must be a remote libSQL/Turso URL (libsql://...) on Vercel: the serverless ' +
+        'filesystem is ephemeral, so a local SQLite file would lose its data.',
+    );
+    process.exit(1);
+  }
+
+  const filePath = raw.startsWith('file:') ? raw.slice(5) : raw;
+  const resolvedPath = path.resolve(process.cwd(), filePath);
+  fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+
+  // Use a file: URL with forward slashes so Windows drive letters work too.
+  return { url: `file:${resolvedPath.replaceAll('\\', '/')}`, isLocalFile: true };
 }
 
-export const sqlite = new Database(resolvedPath);
-sqlite.pragma('journal_mode = WAL');
-sqlite.pragma('foreign_keys = ON');
+const database = resolveDatabase();
 
-export const db = drizzle(sqlite, { schema });
+export const client = createClient({ url: database.url, authToken: database.authToken });
+
+if (database.isLocalFile) {
+  // Remote libSQL enforces foreign keys by default; do the same for local files.
+  await client.execute('PRAGMA foreign_keys = ON');
+}
+
+export const db = drizzle(client, { schema });
 
 export async function closeDb(): Promise<void> {
-  sqlite.close();
+  client.close();
 }
