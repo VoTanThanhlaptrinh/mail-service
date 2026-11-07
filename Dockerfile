@@ -30,7 +30,7 @@ COPY package*.json ./
 COPY client/package.json ./client/
 COPY server/package.json ./server/
 
-# Install production dependencies only (better-sqlite3 uses prebuilt binary out of the box)
+# Install production dependencies only (@libsql/client ships prebuilt native binaries, no compiler needed)
 RUN npm install --omit=dev
 
 # Copy compiled files from builder
