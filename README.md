@@ -1,6 +1,6 @@
 # Mail Service
 
-Monorepo khởi tạo cho dịch vụ gửi mail: **React (Vite + TypeScript)** ở frontend, **Node.js (Express 5 + TypeScript)** ở backend và **SQLite** làm cơ sở dữ liệu.
+Monorepo khởi tạo cho dịch vụ gửi mail: **React (Vite + TypeScript)** ở frontend, **Node.js (Express 5 + TypeScript)** ở backend và **SQLite (libSQL)** làm cơ sở dữ liệu: file cục bộ khi dev/Docker, [Turso](https://turso.tech) khi deploy lên Vercel.
 
 ```
 mail-service/
@@ -12,7 +12,7 @@ mail-service/
 │  │  ├─ format.ts          # định dạng ngày giờ, thời lượng, datetime-local
 │  │  └─ types.ts
 │  └─ vite.config.ts        # proxy /api -> http://localhost:4000
-├─ server/                  # Express 5 + Drizzle ORM + better-sqlite3
+├─ server/                  # Express 5 + Drizzle ORM + libSQL (SQLite / Turso)
 │  ├─ src/
 │  │  ├─ routes/            # health.ts, mails.ts, api-keys.ts, usage.ts, audit-logs.ts
 │  │  ├─ middleware/        # error-handler.ts, api-key-auth.ts, request-context.ts
@@ -20,7 +20,7 @@ mail-service/
 │  │  ├─ services/          # mailer.ts, usage.ts, template.ts
 │  │  ├─ types/             # express.d.ts (auditContext, apiKey)
 │  │  ├─ schema.ts          # định nghĩa bảng bằng Drizzle SQLite
-│  │  ├─ db.ts              # better-sqlite3 + drizzle client
+│  │  ├─ db.ts              # libSQL client (file hoặc Turso) + drizzle
 │  │  ├─ migrate.ts         # runner khởi tạo schema SQLite
 │  │  └─ seed.ts            # dữ liệu mẫu
 │  └─ .env.example
@@ -70,6 +70,23 @@ docker compose up -d --build
 - Web + API: <http://localhost:4000> (container phục vụ cả giao diện web lẫn API, không có cổng 5173)
 - Health: <http://localhost:4000/api/health> (cũng là healthcheck của container, xem `docker ps`)
 - Dữ liệu SQLite nằm trong named volume `mail-data` nên được giữ lại khi `docker compose down`; thêm `-v` nếu muốn xoá cả dữ liệu.
+
+### Cách 3: Deploy lên Vercel + Turso
+
+Vercel không có ổ đĩa bền nên file SQLite cục bộ sẽ mất dữ liệu; dùng database Turso thay thế.
+
+1. Tạo database trên Turso, lấy **URL** (`libsql://<db>-<org>.turso.io`) và **auth token**.
+2. Tạo bảng trên Turso, chạy một lần từ máy bạn (điền `TURSO_DATABASE_URL` và `TURSO_AUTH_TOKEN` trong `server/.env`):
+
+   ```bash
+   npm run db:migrate
+   ```
+
+3. Import repo vào Vercel (giữ nguyên cấu hình trong `vercel.json`) và thêm Environment Variables:
+   `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`.
+4. Vercel build bằng `npm run build`, phục vụ `client/dist` làm web tĩnh, còn `/api/*` chạy qua `api/index.mjs` (Express).
+
+> `TURSO_DATABASE_URL` được ưu tiên hơn `DATABASE_URL` (file SQLite cục bộ). Để trống hai biến Turso thì dùng file cục bộ. Trên Vercel mà thiếu biến Turso, server sẽ từ chối khởi động.
 
 ![Giao diện Mail Service](docs/preview.png)
 

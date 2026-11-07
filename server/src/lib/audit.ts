@@ -1,7 +1,4 @@
-import type { ExtractTablesWithRelations } from 'drizzle-orm';
-import type { BetterSQLiteTransaction } from 'drizzle-orm/better-sqlite3';
 import { db } from '../db.ts';
-import * as schema from '../schema.ts';
 import { auditLogs, type AuditChanges } from '../schema.ts';
 
 /** Identity and request metadata attached to every audited database write. */
@@ -12,10 +9,7 @@ export interface AuditContext {
   userAgent: string | null;
 }
 
-export type DbTransaction = BetterSQLiteTransaction<
-  typeof schema,
-  ExtractTablesWithRelations<typeof schema>
->;
+export type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export const systemAuditContext: AuditContext = {
   actor: 'system',

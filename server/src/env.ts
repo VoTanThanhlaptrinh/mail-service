@@ -9,6 +9,12 @@ const schema = z.object({
     .trim()
     .min(1)
     .default('./data/mail.db'),
+  /**
+   * Turso / libSQL connection. When TURSO_DATABASE_URL is set it takes priority over
+   * DATABASE_URL (which stays available for a local SQLite file in dev / Docker).
+   */
+  TURSO_DATABASE_URL: z.string().trim().default(''),
+  TURSO_AUTH_TOKEN: z.string().trim().default(''),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
   SMTP_HOST: z.string().trim().min(1).default('localhost'),
   SMTP_PORT: z.coerce.number().int().positive().default(1025),
@@ -35,5 +41,7 @@ if (!parsed.success) {
 
 export const env = {
   ...parsed.data,
+  /** True when running as a Vercel serverless function (no persistent local disk). */
+  IS_SERVERLESS: Boolean(process.env.VERCEL),
   corsOrigins: parsed.data.CORS_ORIGIN.split(',').map((value) => value.trim()),
 };
