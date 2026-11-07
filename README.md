@@ -69,17 +69,17 @@ docker compose up -d --build
 Vercel không có ổ đĩa bền nên file SQLite cục bộ sẽ mất dữ liệu; dùng database Turso thay thế.
 
 1. Tạo database trên Turso, lấy **URL** (`libsql://<db>-<org>.turso.io`) và **auth token**.
-2. Tạo bảng trên Turso, chạy một lần từ máy bạn (đặt `DATABASE_URL` và `TURSO_AUTH_TOKEN` trong `server/.env`):
+2. Tạo bảng trên Turso, chạy một lần từ máy bạn (điền `TURSO_DATABASE_URL` và `TURSO_AUTH_TOKEN` trong `server/.env`):
 
    ```bash
    npm run db:migrate
    ```
 
 3. Import repo vào Vercel (giữ nguyên cấu hình trong `vercel.json`) và thêm Environment Variables:
-   `DATABASE_URL`, `TURSO_AUTH_TOKEN`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`.
+   `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`.
 4. Vercel build bằng `npm run build`, phục vụ `client/dist` làm web tĩnh, còn `/api/*` chạy qua `api/index.mjs` (Express).
 
-> Nếu `DATABASE_URL` không phải URL từ xa, server sẽ từ chối khởi động trên Vercel.
+> `TURSO_DATABASE_URL` được ưu tiên hơn `DATABASE_URL` (file SQLite cục bộ). Để trống hai biến Turso thì dùng file cục bộ. Trên Vercel mà thiếu biến Turso, server sẽ từ chối khởi động.
 
 ![Giao diện Mail Service](docs/preview.png)
 
