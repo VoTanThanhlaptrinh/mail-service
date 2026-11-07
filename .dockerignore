@@ -1,0 +1,17 @@
+node_modules
+client/node_modules
+server/node_modules
+dist
+client/dist
+server/dist
+.git
+.npm-cache
+.pnpm-store
+.pnpm-cache
+data
+server/data
+scripts
+*.log
+npm-debug.log*
+.env
+
