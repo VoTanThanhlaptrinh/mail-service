@@ -6,7 +6,9 @@ const schema = z.object({
   PORT: z.coerce.number().int().positive().default(4000),
   DATABASE_URL: z
     .string()
-    .min(1, 'DATABASE_URL is required — copy server/.env.example to server/.env'),
+    .trim()
+    .min(1)
+    .default('./data/mail.db'),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
   SMTP_HOST: z.string().trim().min(1).default('localhost'),
   SMTP_PORT: z.coerce.number().int().positive().default(1025),

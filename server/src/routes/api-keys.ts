@@ -1,8 +1,8 @@
 import { Router } from 'express';
-import { and, count, desc, eq, ilike, isNull, or, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, isNull, like, or, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db.ts';
-import { withAudit } from '../lib/audit.ts';
+import { recordAudit, withAudit } from '../lib/audit.ts';
 import { formatApiKeyPrefix, generateApiKey } from '../lib/api-keys.ts';
 import { HttpError } from '../middleware/error-handler.ts';
 import { apiKeys, type ApiKey } from '../schema.ts';

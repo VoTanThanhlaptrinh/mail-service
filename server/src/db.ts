@@ -1,20 +1,26 @@
-import { drizzle } from 'drizzle-orm/node-postgres';
-import { Pool } from 'pg';
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import fs from 'node:fs';
+import path from 'node:path';
 import { env } from './env.ts';
 import * as schema from './schema.ts';
 
-export const pool = new Pool({
-  connectionString: env.DATABASE_URL,
-  max: 10,
-  idleTimeoutMillis: 30_000,
-});
+const dbPath = env.DATABASE_URL.startsWith('file:')
+  ? env.DATABASE_URL.slice(5)
+  : env.DATABASE_URL;
 
-pool.on('error', (error) => {
-  console.error('Unexpected PostgreSQL pool error:', error);
-});
+const resolvedPath = path.resolve(process.cwd(), dbPath);
+const dir = path.dirname(resolvedPath);
+if (!fs.existsSync(dir)) {
+  fs.mkdirSync(dir, { recursive: true });
+}
 
-export const db = drizzle(pool, { schema });
+export const sqlite = new Database(resolvedPath);
+sqlite.pragma('journal_mode = WAL');
+sqlite.pragma('foreign_keys = ON');
+
+export const db = drizzle(sqlite, { schema });
 
 export async function closeDb(): Promise<void> {
-  await pool.end();
+  sqlite.close();
 }

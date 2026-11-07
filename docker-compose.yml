@@ -1,22 +1,18 @@
 services:
-  db:
-    image: postgres:16-alpine
-    container_name: mail-service-db
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: mail-service-smtp
     restart: unless-stopped
-    environment:
-      POSTGRES_USER: mail
-      POSTGRES_PASSWORD: mail
-      POSTGRES_DB: mail_service
     ports:
-      # Host port 5433 to avoid clashing with a locally installed PostgreSQL on 5432.
-      - "${POSTGRES_PORT:-5433}:5432"
+      # SMTP port (matches SMTP_PORT=1025 in server/.env)
+      - "${SMTP_PORT:-1025}:1025"
+      # Web UI port to view and inspect all sent emails
+      - "${MAILPIT_PORT:-8025}:8025"
+    environment:
+      MP_MAX_MESSAGES: 5000
+      MP_DATABASE: /data/mailpit.db
     volumes:
-      - db-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mail -d mail_service"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+      - mailpit-data:/data
 
 volumes:
-  db-data:
+  mailpit-data:

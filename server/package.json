@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Mail Service REST API (Express + Drizzle ORM + PostgreSQL)",
+  "description": "Mail Service REST API (Express + Drizzle ORM + SQLite)",
   "main": "dist/index.js",
   "scripts": {
     "dev": "node --watch src/index.ts",
@@ -14,20 +14,20 @@
     "db:seed": "node src/seed.ts"
   },
   "dependencies": {
+    "better-sqlite3": "^11.8.1",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "drizzle-orm": "^0.44.7",
     "express": "^5.3.0",
     "nodemailer": "^6.10.0",
-    "pg": "^8.16.3",
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/node": "^24.0.0",
     "@types/nodemailer": "^6.4.17",
-    "@types/pg": "^8.15.5",
     "typescript": "5.9.3"
   }
 }
