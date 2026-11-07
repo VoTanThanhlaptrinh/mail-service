@@ -1,9 +1,9 @@
-import { closeDb, sqlite } from './db.ts';
+import { client, closeDb } from './db.ts';
 
 async function main(): Promise<void> {
   console.log('Running SQLite migrations...');
 
-  sqlite.exec(`
+  await client.executeMultiple(`
     CREATE TABLE IF NOT EXISTS mails (
       id TEXT PRIMARY KEY,
       "to" TEXT NOT NULL,
