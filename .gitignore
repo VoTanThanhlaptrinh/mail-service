@@ -18,6 +18,10 @@ server/dist/
 .pnpm-store/
 .pnpm-cache/
 scripts/
+# local SQLite data
+data/
+server/data/
+
 # logs & os files
 *.log
 npm-debug.log*
@@ -28,3 +32,6 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 .idea/
+
+.vercel
+.env*.local

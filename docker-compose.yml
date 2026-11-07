@@ -8,10 +8,25 @@ services:
     ports:
       - "${PORT:-4000}:4000"
     env_file:
-      - ./server/.env
+      - path: ./server/.env
+        required: false
     environment:
       - NODE_ENV=production
       - PORT=4000
       - DATABASE_URL=/app/data/mail.db
     volumes:
-      - ./data:/app/data
+      # Named volume: safer for SQLite WAL than a bind mount (esp. Docker Desktop on Windows)
+      - mail-data:/app/data
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://localhost:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  mail-data:

@@ -13,5 +13,5 @@ server/data
 scripts
 *.log
 npm-debug.log*
-.env
+**/.env
 

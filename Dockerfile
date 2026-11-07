@@ -4,12 +4,12 @@ FROM node:22-slim AS builder
 WORKDIR /app
 
 # Copy package manifests
-COPY package.json package-lock.json ./
+COPY package*.json ./
 COPY client/package.json ./client/
 COPY server/package.json ./server/
 
 # Install dependencies (including devDependencies for build)
-RUN npm ci
+RUN npm install
 
 # Copy source code
 COPY client/ ./client/
@@ -26,21 +26,24 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 # Copy package manifests
-COPY package.json package-lock.json ./
+COPY package*.json ./
 COPY client/package.json ./client/
 COPY server/package.json ./server/
 
 # Install production dependencies only (better-sqlite3 uses prebuilt binary out of the box)
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
 # Copy compiled files from builder
 COPY --from=builder /app/client/dist ./client/dist
 COPY --from=builder /app/server/dist ./server/dist
 
-# Create data directory for SQLite persistence
-RUN mkdir -p /app/data
+# Create data directory for SQLite persistence (owned by the non-root user)
+RUN mkdir -p /app/data && chown -R node:node /app/data
+
+USER node
 
 EXPOSE 4000
 
-# Run migrations to ensure tables exist, then start the server
-CMD ["sh", "-c", "node server/dist/migrate.js && node server/dist/index.js"]
+# Run migrations to ensure tables exist, then start the server.
+# `exec` makes node PID 1 so it receives SIGTERM and closes SQLite cleanly.
+CMD ["sh", "-c", "node server/dist/migrate.js && exec node server/dist/index.js"]

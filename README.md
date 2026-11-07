@@ -54,15 +54,22 @@ npm run db:seed
 npm run dev
 ```
 
+- Web (dev): <http://localhost:5173>
+- API: <http://localhost:4000/api/health>
+
 ### Cách 2: Chạy toàn bộ bằng Docker Compose
 
 ```bash
+# (Tuỳ chọn) tạo cấu hình SMTP cho server; nếu bỏ qua sẽ dùng giá trị mặc định
+copy server\.env.example server\.env      # Windows
+# cp server/.env.example server/.env      # macOS / Linux
+
 docker compose up -d --build
-# Mở ứng dụng tại http://localhost:4000 (đã gồm cả giao diện web và API)
 ```
 
-- Web: <http://localhost:5173>
-- API: <http://localhost:4000/api/health>
+- Web + API: <http://localhost:4000> (container phục vụ cả giao diện web lẫn API, không có cổng 5173)
+- Health: <http://localhost:4000/api/health> (cũng là healthcheck của container, xem `docker ps`)
+- Dữ liệu SQLite nằm trong named volume `mail-data` nên được giữ lại khi `docker compose down`; thêm `-v` nếu muốn xoá cả dữ liệu.
 
 ![Giao diện Mail Service](docs/preview.png)
 
