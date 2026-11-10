@@ -51,14 +51,25 @@ export function renderTemplate(template: string, variables: Record<string, strin
   });
 }
 
+export interface RecipientRenderError {
+  index: number;
+  to: string;
+  missingVariables?: string[];
+  reason: string;
+}
+
 /**
  * Validates and renders template for each recipient in a bulk mail request.
- * Throws HttpError(400) if any recipient is missing required variables.
+ * Collects all errors across all recipients (missing variables or post-render length exceeded)
+ * and throws HttpError(400) with details.errors if any error occurs.
  */
 export function renderRecipientMails(input: BulkRenderInput): RenderedMailItem[] {
   const subjectVars = extractTemplateVariables(input.subject);
   const bodyVars = extractTemplateVariables(input.body);
   const requiredVars = Array.from(new Set([...subjectVars, ...bodyVars]));
+
+  const errors: RecipientRenderError[] = [];
+  const renderedItems: RenderedMailItem[] = [];
 
   for (let index = 0; index < input.recipients.length; index++) {
     const recipient = input.recipients[index];
@@ -73,17 +84,50 @@ export function renderRecipientMails(input: BulkRenderInput): RenderedMailItem[]
     }
 
     if (missing.length > 0) {
-      throw new HttpError(
-        400,
-        `Recipient ${recipient.to} (index ${index}) is missing template variables: ${missing.join(', ')}`,
-        { index, to: recipient.to, missingVariables: missing },
-      );
+      errors.push({
+        index,
+        to: recipient.to,
+        missingVariables: missing,
+        reason: `Missing required template variables: ${missing.join(', ')}`,
+      });
+      continue;
     }
+
+    const renderedSubject = renderTemplate(input.subject, vars);
+    const renderedBody = renderTemplate(input.body, vars);
+
+    if (renderedSubject.length > 200) {
+      errors.push({
+        index,
+        to: recipient.to,
+        reason: `Rendered subject exceeds maximum length of 200 characters (actual: ${renderedSubject.length})`,
+      });
+      continue;
+    }
+
+    if (renderedBody.length > 20_000) {
+      errors.push({
+        index,
+        to: recipient.to,
+        reason: `Rendered body exceeds maximum length of 20,000 characters (actual: ${renderedBody.length})`,
+      });
+      continue;
+    }
+
+    renderedItems.push({
+      to: recipient.to,
+      subject: renderedSubject,
+      body: renderedBody,
+    });
   }
 
-  return input.recipients.map((recipient) => ({
-    to: recipient.to,
-    subject: renderTemplate(input.subject, recipient.variables),
-    body: renderTemplate(input.body, recipient.variables),
-  }));
+  if (errors.length > 0) {
+    throw new HttpError(
+      400,
+      `Template validation failed for ${errors.length} recipient(s)`,
+      { errors },
+    );
+  }
+
+  return renderedItems;
 }

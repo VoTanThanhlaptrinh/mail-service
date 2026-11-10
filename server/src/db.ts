@@ -45,7 +45,9 @@ const database = resolveDatabase();
 export const client = createClient({ url: database.url, authToken: database.authToken });
 
 if (database.isLocalFile) {
-  // Remote libSQL enforces foreign keys by default; do the same for local files.
+  await client.execute('PRAGMA journal_mode = WAL');
+  await client.execute('PRAGMA busy_timeout = 5000');
+  await client.execute('PRAGMA synchronous = NORMAL');
   await client.execute('PRAGMA foreign_keys = ON');
 }
 

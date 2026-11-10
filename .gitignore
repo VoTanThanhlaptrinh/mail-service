@@ -22,6 +22,10 @@ scripts/
 data/
 server/data/
 
+# Kafka CA certificates (Aiven ca.pem)
+server/certs/
+server/.cert/
+
 # logs & os files
 *.log
 npm-debug.log*

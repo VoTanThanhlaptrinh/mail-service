@@ -1,6 +1,6 @@
 import type { Request } from 'express';
 import { Router } from 'express';
-import { and, count, desc, eq, like, or, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, like, or, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db.ts';
 import { mails, type Mail } from '../schema.ts';
@@ -12,7 +12,7 @@ import { renderRecipientMails, type RenderedMailItem } from '../services/templat
 
 export const mailsRouter = Router();
 
-const statusSchema = z.enum(['QUEUED', 'SENT', 'FAILED']);
+const statusSchema = z.enum(['QUEUED', 'SENDING', 'SENT', 'FAILED']);
 
 const createMailSchema = z.object({
   to: z.email('Must be a valid email address'),
@@ -22,7 +22,13 @@ const createMailSchema = z.object({
 
 const bulkRecipientSchema = z.object({
   to: z.email('Must be a valid email address'),
-  variables: z.record(z.string(), z.string()).optional(),
+  variables: z
+    .record(z.string(), z.string().max(1_000, 'Variable value must be at most 1000 characters'))
+    .optional()
+    .refine(
+      (vars) => !vars || Object.keys(vars).length <= 50,
+      'Maximum 50 variables per recipient',
+    ),
 });
 
 const bulkSendMailSchema = z.object({
@@ -39,7 +45,7 @@ const bulkCreateMailSchema = bulkSendMailSchema.extend({
 });
 
 const updateMailSchema = z.object({
-  status: statusSchema,
+  status: z.enum(['QUEUED', 'FAILED']),
   error: z.string().max(2_000).nullish(),
 });
 
@@ -68,6 +74,7 @@ async function logMailUsage(
     mailId?: string | null;
     errorCode?: string | null;
     errorMessage?: string | null;
+    metadata?: Record<string, unknown>;
   },
 ): Promise<void> {
   if (!req.apiKey) return;
@@ -85,6 +92,7 @@ async function logMailUsage(
     requestId: req.auditContext?.requestId ?? null,
     ip: req.auditContext?.ip ?? null,
     userAgent: req.auditContext?.userAgent ?? null,
+    metadata: input.metadata ?? {},
   });
 }
 
@@ -241,27 +249,44 @@ async function executeBulkSend(renderedItems: RenderedMailItem[]): Promise<BulkM
   };
 }
 
+function getBulkSendStatus(result: BulkMailExecutionResult): number {
+  if (result.failedCount === result.total) return 502;
+  if (result.sentCount > 0 && result.failedCount > 0) return 207;
+  return 201;
+}
+
 async function logBulkSendResult(
   req: Request,
   startedAt: number,
   result: BulkMailExecutionResult,
-): Promise<void> {
-  if (result.failedCount === result.total) {
+): Promise<number> {
+  const statusCode = getBulkSendStatus(result);
+  const metadata = {
+    total: result.total,
+    sentCount: result.sentCount,
+    failedCount: result.failedCount,
+    mailIds: result.items.map((m) => m.id),
+  };
+
+  if (statusCode === 502) {
     await logMailUsage(req, startedAt, {
       outcome: 'FAILED',
       statusCode: 502,
       mailId: result.items[0]?.id ?? null,
       errorCode: 'MAIL_SEND_FAILED',
       errorMessage: 'All emails in batch failed to deliver',
+      metadata,
     });
-    return;
+    return statusCode;
   }
 
   await logMailUsage(req, startedAt, {
     outcome: 'SUCCESS',
-    statusCode: 201,
+    statusCode,
     mailId: result.items[0]?.id ?? null,
+    metadata,
   });
+  return statusCode;
 }
 
 /**
@@ -300,9 +325,9 @@ mailsRouter.post('/send-bulk', requireApiKey('mail:send'), async (req, res) => {
   }
 
   const result = await executeBulkSend(renderedItems);
-  await logBulkSendResult(req, startedAt, result);
+  const statusCode = await logBulkSendResult(req, startedAt, result);
 
-  res.status(201).json(result);
+  res.status(statusCode).json(result);
 });
 
 /**
@@ -356,6 +381,12 @@ mailsRouter.post('/bulk', optionalApiKey, async (req, res) => {
       outcome: 'SUCCESS',
       statusCode: 201,
       mailId: inserted[0]?.id ?? null,
+      metadata: {
+        total: inserted.length,
+        sentCount: 0,
+        failedCount: 0,
+        mailIds: inserted.map((m) => m.id),
+      },
     });
 
     res.status(201).json({
@@ -369,9 +400,9 @@ mailsRouter.post('/bulk', optionalApiKey, async (req, res) => {
   }
 
   const result = await executeBulkSend(renderedItems);
-  await logBulkSendResult(req, startedAt, result);
+  const statusCode = await logBulkSendResult(req, startedAt, result);
 
-  res.status(201).json(result);
+  res.status(statusCode).json(result);
 });
 
 /**
@@ -410,19 +441,25 @@ mailsRouter.post('/:id/send', optionalApiKey, async (req, res) => {
     throw new HttpError(404, 'Mail not found');
   }
 
-  if (existing.status === 'SENT') {
+  const [claimed] = await db
+    .update(mails)
+    .set({ status: 'SENDING', updatedAt: new Date() })
+    .where(and(eq(mails.id, id), inArray(mails.status, ['QUEUED', 'FAILED'])))
+    .returning();
+
+  if (!claimed) {
     await logMailUsage(req, startedAt, {
       outcome: 'FAILED',
       statusCode: 409,
       mailId: existing.id,
       errorCode: 'MAIL_ALREADY_SENT',
-      errorMessage: 'Mail has already been sent',
+      errorMessage: 'Mail has already been sent or is currently being sent',
     });
-    throw new HttpError(409, 'Mail has already been sent');
+    throw new HttpError(409, 'Mail has already been sent or is currently being sent');
   }
 
   try {
-    await deliverMail({ to: existing.to, subject: existing.subject, body: existing.body });
+    await deliverMail({ to: claimed.to, subject: claimed.subject, body: claimed.body });
 
     const [mail] = await db
       .update(mails)
@@ -460,13 +497,17 @@ mailsRouter.patch('/:id', async (req, res) => {
   const [existing] = await db.select().from(mails).where(eq(mails.id, id));
   if (!existing) throw new HttpError(404, 'Mail not found');
 
+  if (existing.status === 'SENT' || existing.status === 'SENDING') {
+    throw new HttpError(409, 'Cannot manually change status of a sent or sending mail');
+  }
+
   const [mail] = await db
     .update(mails)
     .set({
       status: data.status,
-      error: data.error ?? null,
+      error: data.status === 'QUEUED' ? null : (data.error ?? existing.error),
+      sentAt: data.status === 'QUEUED' ? null : existing.sentAt,
       updatedAt: new Date(),
-      ...(data.status === 'SENT' ? { sentAt: existing.sentAt ?? new Date() } : {}),
     })
     .where(eq(mails.id, id))
     .returning();

@@ -50,10 +50,12 @@ export async function recordUsage(input: UsageRecordInput): Promise<void> {
         metadata: input.metadata ?? {},
       });
 
-      await tx
-        .update(apiKeys)
-        .set({ lastUsedAt: new Date() })
-        .where(eq(apiKeys.id, input.apiKeyId));
+      if (input.outcome !== 'REJECTED') {
+        await tx
+          .update(apiKeys)
+          .set({ lastUsedAt: new Date() })
+          .where(eq(apiKeys.id, input.apiKeyId));
+      }
     });
   } catch (error) {
     console.error('[usage] failed to record API key usage:', error);

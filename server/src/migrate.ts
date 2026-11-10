@@ -9,7 +9,7 @@ async function main(): Promise<void> {
       "to" TEXT NOT NULL,
       subject TEXT NOT NULL,
       body TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'QUEUED' CHECK (status IN ('QUEUED', 'SENT', 'FAILED')),
+      status TEXT NOT NULL DEFAULT 'QUEUED' CHECK (status IN ('QUEUED', 'SENDING', 'SENT', 'FAILED')),
       error TEXT,
       sent_at INTEGER,
       created_at INTEGER NOT NULL,
@@ -83,6 +83,36 @@ async function main(): Promise<void> {
     CREATE INDEX IF NOT EXISTS audit_logs_occurred_at_idx ON audit_logs (occurred_at);
     CREATE INDEX IF NOT EXISTS audit_logs_actor_idx ON audit_logs (actor, occurred_at);
   `);
+
+  const tableInfo = await client.execute(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'mails'",
+  );
+  const sqlDef = (tableInfo.rows[0]?.sql as string | undefined) ?? '';
+  if (sqlDef && !sqlDef.includes("'SENDING'")) {
+    console.log("Upgrading mails table CHECK constraint to include 'SENDING'...");
+    await client.execute('PRAGMA foreign_keys = OFF');
+    await client.executeMultiple(`
+      CREATE TABLE mails_new (
+        id TEXT PRIMARY KEY,
+        "to" TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        body TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'QUEUED' CHECK (status IN ('QUEUED', 'SENDING', 'SENT', 'FAILED')),
+        error TEXT,
+        sent_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO mails_new (id, "to", subject, body, status, error, sent_at, created_at, updated_at)
+        SELECT id, "to", subject, body, status, error, sent_at, created_at, updated_at FROM mails;
+      DROP TABLE mails;
+      ALTER TABLE mails_new RENAME TO mails;
+      CREATE INDEX IF NOT EXISTS mails_status_idx ON mails (status);
+      CREATE INDEX IF NOT EXISTS mails_created_at_idx ON mails (created_at);
+    `);
+    await client.execute('PRAGMA foreign_keys = ON');
+    console.log('Mails table upgraded successfully.');
+  }
 
   console.log('SQLite tables initialized successfully.');
   await closeDb();

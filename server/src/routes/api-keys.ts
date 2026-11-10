@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { and, count, desc, eq, isNull, like, or, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db.ts';
-import { recordAudit, withAudit } from '../lib/audit.ts';
+import { recordAudit, withAudit, type DbTransaction } from '../lib/audit.ts';
 import { formatApiKeyPrefix, generateApiKey } from '../lib/api-keys.ts';
 import { HttpError } from '../middleware/error-handler.ts';
 import { apiKeys, type ApiKey } from '../schema.ts';
@@ -69,8 +69,8 @@ function publicApiKey(apiKey: ApiKey) {
   };
 }
 
-async function findApiKeyOrThrow(id: string): Promise<ApiKey> {
-  const [apiKey] = await db
+async function findApiKeyOrThrow(id: string, executor: typeof db | DbTransaction = db): Promise<ApiKey> {
+  const [apiKey] = await executor
     .select()
     .from(apiKeys)
     .where(and(eq(apiKeys.id, id), isNull(apiKeys.deletedAt)));
@@ -166,9 +166,10 @@ apiKeysRouter.get('/:id/usage', async (req, res) => {
 apiKeysRouter.patch('/:id', async (req, res) => {
   const id = idSchema.parse(req.params.id);
   const data = updateApiKeySchema.parse(req.body);
-  const existing = await findApiKeyOrThrow(id);
 
   const updated = await withAudit(req.auditContext, async (tx) => {
+    const existing = await findApiKeyOrThrow(id, tx);
+
     const [row] = await tx
       .update(apiKeys)
       .set({
@@ -176,9 +177,15 @@ apiKeysRouter.patch('/:id', async (req, res) => {
         ...(data.description !== undefined ? { description: data.description } : {}),
         ...(data.scopes !== undefined ? { scopes: data.scopes } : {}),
         ...(data.expiresAt !== undefined ? { expiresAt: data.expiresAt } : {}),
+        updatedAt: new Date(),
+        updatedBy: req.auditContext.actor,
       })
-      .where(eq(apiKeys.id, id))
+      .where(and(eq(apiKeys.id, id), isNull(apiKeys.deletedAt)))
       .returning();
+
+    if (!row) {
+      throw new HttpError(404, 'API key not found');
+    }
 
     await recordAudit(tx, req.auditContext, {
       entity: 'api_key',
@@ -200,22 +207,29 @@ apiKeysRouter.patch('/:id', async (req, res) => {
 apiKeysRouter.post('/:id/revoke', async (req, res) => {
   const id = idSchema.parse(req.params.id);
   const data = revokeSchema.parse(req.body ?? {});
-  const existing = await findApiKeyOrThrow(id);
-
-  if (existing.status === 'REVOKED') {
-    throw new HttpError(409, 'API key is already revoked');
-  }
 
   const updated = await withAudit(req.auditContext, async (tx) => {
+    const existing = await findApiKeyOrThrow(id, tx);
+
+    if (existing.status === 'REVOKED') {
+      throw new HttpError(409, 'API key is already revoked');
+    }
+
     const [row] = await tx
       .update(apiKeys)
       .set({
         status: 'REVOKED',
         revokedAt: new Date(),
         revokedReason: data.reason ?? 'Revoked via API',
+        updatedAt: new Date(),
+        updatedBy: req.auditContext.actor,
       })
-      .where(eq(apiKeys.id, id))
+      .where(and(eq(apiKeys.id, id), eq(apiKeys.status, 'ACTIVE'), isNull(apiKeys.deletedAt)))
       .returning();
+
+    if (!row) {
+      throw new HttpError(409, 'API key is already revoked');
+    }
 
     await recordAudit(tx, req.auditContext, {
       entity: 'api_key',
@@ -236,24 +250,30 @@ apiKeysRouter.post('/:id/revoke', async (req, res) => {
 /** POST /api/api-keys/:id/rotate — replace the secret in place, keeping history. */
 apiKeysRouter.post('/:id/rotate', async (req, res) => {
   const id = idSchema.parse(req.params.id);
-  const existing = await findApiKeyOrThrow(id);
-
-  if (existing.status === 'REVOKED') {
-    throw new HttpError(409, 'Cannot rotate a revoked API key');
-  }
-
   const generated = generateApiKey();
 
   const updated = await withAudit(req.auditContext, async (tx) => {
+    const existing = await findApiKeyOrThrow(id, tx);
+
+    if (existing.status === 'REVOKED') {
+      throw new HttpError(409, 'Cannot rotate a revoked API key');
+    }
+
     const [row] = await tx
       .update(apiKeys)
       .set({
         keyHash: generated.keyHash,
         keyPrefix: generated.keyPrefix,
         keyLast4: generated.keyLast4,
+        updatedAt: new Date(),
+        updatedBy: req.auditContext.actor,
       })
-      .where(eq(apiKeys.id, id))
+      .where(and(eq(apiKeys.id, id), eq(apiKeys.status, 'ACTIVE'), isNull(apiKeys.deletedAt)))
       .returning();
+
+    if (!row) {
+      throw new HttpError(409, 'Cannot rotate a revoked API key');
+    }
 
     await recordAudit(tx, req.auditContext, {
       entity: 'api_key',
@@ -275,19 +295,27 @@ apiKeysRouter.post('/:id/rotate', async (req, res) => {
 /** DELETE /api/api-keys/:id — soft delete (kept in the audit trail forever). */
 apiKeysRouter.delete('/:id', async (req, res) => {
   const id = idSchema.parse(req.params.id);
-  const existing = await findApiKeyOrThrow(id);
   const now = new Date();
 
   await withAudit(req.auditContext, async (tx) => {
-    await tx
+    const existing = await findApiKeyOrThrow(id, tx);
+
+    const [row] = await tx
       .update(apiKeys)
       .set({
         status: 'REVOKED',
         revokedAt: existing.revokedAt ?? now,
         revokedReason: existing.revokedReason ?? 'Deleted via API',
+        updatedAt: now,
+        updatedBy: req.auditContext.actor,
         deletedAt: now,
       })
-      .where(eq(apiKeys.id, id));
+      .where(and(eq(apiKeys.id, id), isNull(apiKeys.deletedAt)))
+      .returning();
+
+    if (!row) {
+      throw new HttpError(404, 'API key not found');
+    }
 
     await recordAudit(tx, req.auditContext, {
       entity: 'api_key',

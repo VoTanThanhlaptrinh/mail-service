@@ -33,6 +33,7 @@ mail-service/
 
 - **Node.js >= 22** (server chạy TypeScript trực tiếp bằng type-stripping của Node, không cần `ts-node`/`tsx`)
 - **Docker Desktop** (tùy chọn: dùng khi muốn chạy toàn bộ ứng dụng bằng Docker)
+- **Apache Kafka** (tùy chọn): event bus mặc định ở `localhost:9092`, cấu hình bằng `KAFKA_BROKERS` / `KAFKA_CLIENT_ID` trong `server/.env`
 
 ## Chạy dự án
 
@@ -83,12 +84,60 @@ Vercel không có ổ đĩa bền nên file SQLite cục bộ sẽ mất dữ li
    ```
 
 3. Import repo vào Vercel (giữ nguyên cấu hình trong `vercel.json`) và thêm Environment Variables:
-   `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`.
+   `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`,
+   `KAFKA_BROKERS`, `KAFKA_SSL`, `KAFKA_SASL_MECHANISM`, `KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD` (xem mục [Kafka](#kafka-tuỳ-chọn)).
 4. Vercel build bằng `npm run build`, phục vụ `client/dist` làm web tĩnh, còn `/api/*` chạy qua `api/index.mjs` (Express).
 
 > `TURSO_DATABASE_URL` được ưu tiên hơn `DATABASE_URL` (file SQLite cục bộ). Để trống hai biến Turso thì dùng file cục bộ. Trên Vercel mà thiếu biến Turso, server sẽ từ chối khởi động.
 
 ![Giao diện Mail Service](docs/preview.png)
+
+## Kafka (tuỳ chọn)
+
+Server dùng `kafkajs`; toàn bộ kết nối nằm trong `server/src/lib/kafka.ts` (producer dùng chung, consumer, probe cho health check).
+
+| Biến | Mặc định | Ý nghĩa |
+| --- | --- | --- |
+| `KAFKA_BROKERS` | `localhost:9092` | Danh sách `host:port` ngăn cách bằng dấu phẩy |
+| `KAFKA_CLIENT_ID` | `mail-service` | Tên client gửi lên broker |
+| `KAFKA_SSL` | `false` | `true` khi broker yêu cầu TLS (bắt buộc với Aiven) |
+| `KAFKA_SSL_CA` | rỗng | Đường dẫn file CA PEM khi broker dùng CA riêng (Aiven `ca.pem`) |
+| `KAFKA_SASL_MECHANISM` | `scram-sha-512` | `plain`, `scram-sha-256` hoặc `scram-sha-512` |
+| `KAFKA_SASL_USERNAME` / `KAFKA_SASL_PASSWORD` | rỗng | Bật SASL; phải đặt cả hai hoặc để trống cả hai |
+| `KAFKA_CONSUMER_ENABLED` | `true` | Bật consumer gửi mail tích hợp sẵn |
+| `KAFKA_CONSUMER_GROUP` | `mail-service` | Consumer group |
+| `KAFKA_MAIL_TOPIC` | `mail.send` | Topic nhận lệnh gửi mail |
+| `KAFKA_DLQ_TOPIC` | `mail.send.dlq` | Topic nhận message lỗi (dead letter queue) |
+
+- **Local (PLAINTEXT):** giữ nguyên mặc định, không cần cấu hình thêm.
+- **Cloud — Aiven for Apache Kafka:** bật SASL cho service trong Aiven Console, tạo service user rồi lấy **Bootstrap server**, **username**, **password**, và tải **CA certificate** (`ca.pem`) ở mục _Connection information_. Đặt trong `server/.env`:
+
+  ```dotenv
+  KAFKA_BROKERS="<service>-<project>.aivencloud.com:<sasl_port>"
+  KAFKA_SSL=true
+  KAFKA_SASL_MECHANISM="scram-sha-512"   # Aiven hỗ trợ thêm "plain" / "scram-sha-256"
+  KAFKA_SASL_USERNAME="<service_user>"
+  KAFKA_SASL_PASSWORD="<password>"
+  KAFKA_SSL_CA="./certs/ca.pem"          # bỏ trống nếu broker dùng CA công khai
+  ```
+
+  Aiven bắt buộc TLS và hỗ trợ PLAIN, SCRAM-SHA-256, SCRAM-SHA-512 ([tài liệu Aiven](https://aiven.io/docs/products/kafka/concepts/auth-types)); nhớ thêm `server/certs/` vào `.gitignore` và không commit `ca.pem`.
+
+- **Kiểm tra kết nối:** `GET /api/health` trả thêm field `kafka: "up" | "down"`; Kafka down không làm healthcheck trả 503 (chỉ database quyết định điều đó).
+
+### Gửi mail qua Kafka
+
+Khi `KAFKA_CONSUMER_ENABLED=true`, server subscribe `KAFKA_MAIL_TOPIC` và gửi mail từ mọi message JSON:
+
+```json
+{ "to": "user@example.com", "subject": "Xin chào", "body": "Nội dung email" }
+```
+
+- Message hợp lệ → gọi SMTP (`deliverMail`), thử lại 3 lần với backoff trước khi bỏ cuộc.
+- JSON sai / thiếu field / SMTP lỗi sau 3 lần → chuyển sang `KAFKA_DLQ_TOPIC` kèm header `x-error`, `x-original-topic`, `x-original-partition`, `x-original-offset`.
+- Consumer chạy chung process API và tự kết nối lại sau 10 giây nếu broker chưa sẵn sàng; shutdown sẽ đóng consumer gọn gàng.
+- Topic phải tồn tại trước (Aiven thường tắt auto-create): tạo `mail.send` và `mail.send.dlq` trong Aiven Console hoặc bằng `kafka-topics.sh --create`.
+- Kafka chỉ đảm bảo **at-least-once**: nếu consumer chết sau khi SMTP nhận mail nhưng trước khi commit offset, mail có thể bị gửi lại. Cần chống trùng thì bổ sung idempotency key.
 
 ## Giao diện
 

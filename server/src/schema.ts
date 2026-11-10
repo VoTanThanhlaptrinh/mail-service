@@ -14,7 +14,7 @@ export const mails = sqliteTable(
     to: text('to').notNull(),
     subject: text('subject').notNull(),
     body: text('body').notNull(),
-    status: text('status', { enum: ['QUEUED', 'SENT', 'FAILED'] }).notNull().default('QUEUED'),
+    status: text('status', { enum: ['QUEUED', 'SENDING', 'SENT', 'FAILED'] }).notNull().default('QUEUED'),
     error: text('error'),
     sentAt: integer('sent_at', { mode: 'timestamp' }),
     createdAt: integer('created_at', { mode: 'timestamp' })
@@ -22,7 +22,8 @@ export const mails = sqliteTable(
       .$defaultFn(() => new Date()),
     updatedAt: integer('updated_at', { mode: 'timestamp' })
       .notNull()
-      .$defaultFn(() => new Date()),
+      .$defaultFn(() => new Date())
+      .$onUpdateFn(() => new Date()),
   },
   (table) => [
     index('mails_status_idx').on(table.status),
@@ -62,7 +63,8 @@ export const apiKeys = sqliteTable(
     createdBy: text('created_by').notNull().default('system'),
     updatedAt: integer('updated_at', { mode: 'timestamp' })
       .notNull()
-      .$defaultFn(() => new Date()),
+      .$defaultFn(() => new Date())
+      .$onUpdateFn(() => new Date()),
     updatedBy: text('updated_by').notNull().default('system'),
     deletedAt: integer('deleted_at', { mode: 'timestamp' }),
   },
